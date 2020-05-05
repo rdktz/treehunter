@@ -36,5 +36,4 @@ Set OSM\_USER and OSM\_PASSWD environment variables for authentication the calls
 
 Bugs can be reported via GitHub https://github.com/rdktz/treehunter/issues
 
-Author contact 
 Readme generated with https://metacpan.org/pod/distribution/Pod-Markdown/bin/pod2markdown 
