@@ -2,6 +2,8 @@
 
 ## Tags
 
+The data is replicated thanks to the cordiality of https://www.rpdp.hostingasp.pl/.
+
 The following OSM page lists the supported tags https://wiki.openstreetmap.org/wiki/Tag:natural=tree
 Currently the script uses only a subset of those, namely:
 
