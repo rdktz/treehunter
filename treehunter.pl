@@ -2,7 +2,9 @@
 
 =head2 Tags
 
-The following OSM page lists the supported tags https://wiki.openstreetmap.org/wiki/Tag:natural=tree
+The data is replicated thanks to the cordiality of L<https://www.rpdp.hostingasp.pl/>.
+
+The following OSM page lists the supported tags L<https://wiki.openstreetmap.org/wiki/Tag:natural=tree>
 Currently the script uses only a subset of those, namely:
 
 =over 4
@@ -19,7 +21,7 @@ Currently the script uses only a subset of those, namely:
 
 =item * Source -> RPDP
 
-Sample tree added by the script: https://master.apis.dev.openstreetmap.org/node/4319597672 (DEV OSM server)
+Sample tree added by the script: L<https://master.apis.dev.openstreetmap.org/node/4319597672> (DEV OSM server)
 
 =item * Website -> RPDP link
 
@@ -37,8 +39,7 @@ OSM APIs:
 
 =back
 
-See https://wiki.openstreetmap.org/wiki/API_v0.6#Create:_PUT_.2Fapi.2F0.6.2F.5Bnode.7Cway.7Crelation.5D.2Fcreate 
-for more info
+See L<https://wiki.openstreetmap.org/wiki/API_v0.6#Create:_PUT_.2Fapi.2F0.6.2F.5Bnode.7Cway.7Crelation.5D.2Fcreate> for more info
 
 Additionally Overpass search API is used to check for duplicates.
 
@@ -48,8 +49,9 @@ Set OSM_USER and OSM_PASSWD environment variables for authentication the calls t
 
 =head2 Bugs and Help
 
-Bugs can be reported via GitHub https://github.com/rdktz/treehunter/issues
-Author contact <az.zdzi@yahoo.com>
+Bugs can be reported via GitHub L<https://github.com/rdktz/treehunter/issues>
+
+Readme generated with L<https://metacpan.org/pod/distribution/Pod-Markdown/bin/pod2markdown>
 
 =cut
 
@@ -79,8 +81,14 @@ $overpass_client->setFollow(1);
 # OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
 sub dump { print STDERR Dumper shift->as_string; return};
-#$overpass_ua->add_handler("request_send",  \&dump);
-#$overpass_ua->add_handler("response_done",  \&dump);
+my $trace_http = 1;
+
+if ($trace_http){
+	$overpass_ua->add_handler("request_send",  \&dump);
+	$overpass_ua->add_handler("response_done",  \&dump);
+	$ua->add_handler("request_send",  \&dump);
+	$ua->add_handler("response_done",  \&dump);
+}
 
 sub run_overpass_query {
 	my $query = shift;
@@ -144,7 +152,9 @@ sub get_rpdp_trees {
 	my @trees;
 	foreach my $t ($dom->findnodes('//NewDataSet/Table')) {
 	    my $name = $t->findvalue("Name"); 
-	    my $species_pl = $t->findvalue("Species");
+	    my $species_pl = $t->findvalue("SpeciesPL");
+	    my $species_en= $t->findvalue("SpeciesEN");
+	    my $species_lat = $t->findvalue("SpeciesLat");
 	    my $age = $t->findvalue("Age");
 	    my $circumference= $t->findvalue("Girth");
 	    my $height = $t->findvalue("Height");
@@ -155,19 +165,25 @@ sub get_rpdp_trees {
 	    my $protected = $t->findvalue("IsProtected");
 		my $url = sprintf URL_RPDP_TREE_TMPL, $tid;
 	
-		push @trees, 
-			{ 
+		my $osm_tree = { 
 			  website =>$url,
 			  source => URL_RPDP_BASE,
 			  name => $name,
-			  'species:pl' => $species_pl,
-			  # TODO: species
 			  age => $age,
 			  circumference => $circumference,
 			  height => $height,
 			  lat => $lat,
 			  lon => $lon,
+			  'species' => $species_lat,
+			  'species:pl' => $species_pl,
+			  'species:en' => $species_en,
 			};
+		
+		foreach (keys(%$osm_tree)){
+			delete $osm_tree->{$_} if (!defined $osm_tree->{$_} || $osm_tree->{$_} =~ /^(?:\s*|0)$/); 
+		}
+		
+		push @trees, $osm_tree; 
 	}
 	printf "Found %u more trees\n", scalar(@trees);
 	return @trees;
@@ -177,7 +193,7 @@ use constant OSM_NEW_CHANGESET_TMPL => '
 <osm>
 	<changeset version="0.6" generator="[% app_name %]">
 	<tag k="created_by" v="[% app_name %] [% app_version %]"/>
-	<tag k="comment" v="[% comment %]"/></changeset>
+	<tag k="description v="[% description %]"/></changeset>
 </osm>
 ';
 
@@ -199,6 +215,8 @@ use constant OSM_TAG_KEY_NATURAL=> 'natural';
 use constant OSM_TAG_VAL_TREE => 'tree';
 
 use constant OSM_SERVER_URL => 'https://master.apis.dev.openstreetmap.org';
+use constant OSM_NODE_URL_TMPL => 'https://master.apis.dev.openstreetmap.org/node/%u';
+use constant TREEHUNTER_README_URL => 'https://github.com/rdktz/treehunter/blob/master/README.md';
 
 sub add_tree_to_OSM {
 	my $t = shift;
@@ -209,7 +227,8 @@ sub add_tree_to_OSM {
 	$tt->process(\$xml_tmpl, {
 		app_name => APP_NAME,
 		app_version => APP_VERSION,
-		comment => "Adding tree based on RPDP site"
+		comment => "Adding tree based on RPDP site",
+		description => &TREEHUNTER_README_URL
 		},
 		\$req_xml
 	)  || die $tt->error(), "\n";
@@ -254,24 +273,31 @@ sub add_tree_to_OSM {
 			'accept' => '*/*',
 			'Authorization' => sprintf 'Basic %s', encode_base64(sprintf '%s:%s', $ENV{OSM_USER}, $ENV{OSM_PASSWD})
 		}
-	)  or die "$!";;
+	)  or die "$!";
 
+	my $new_node_num = $osm_client->responseContent + 0;
+	printf "Got new node num %u\n", $new_node_num;
+	return $new_node_num;
 }
 
 die "Missing OSM credentials\n" unless $ENV{OSM_USER} && $ENV{OSM_PASSWD};
 my @recent_trees;
 my $page_num = 1;
-do { @_=&get_rpdp_trees(10,$page_num++,10); push @recent_trees, @_;} while (@_);
+my $tree_num=0;
+do { @_=&get_rpdp_trees(30,$page_num++,10); push @recent_trees, @_;} while (@_);
 #print "Id,Name,Species (PL),Age,Circumference,GPS Lat, GPS Lon\n";
 foreach my $t (@recent_trees){
+	next unless $t->{name} && !($t->{name} =~ /^\s$/);
 	if (!(defined $t->{lat} && $t->{lat} != 0 && defined $t->{lon} && $t->{lon} != 0 )){
-		printf STDERR "Coords missing for tree %s (%u) .. SKIPPING", ($t->{name} || 'unnamed'), $t->{tid};
+		printf STDERR "Coords missing for tree %s (%u) .. SKIPPING\n", ($t->{name} || 'unnamed'), $t->{tid};
+		next;
 	}
 	if(my $t2 = check_if_exists_in_osm($t->{lat},$t->{lon})){
 		printf STDERR "Tree nearby %s in OSM! %s\n", Dumper($t), Dumper($t2);
 		next;
 	}
-	&add_tree_to_OSM($t);
-	last;
+	my $node_num = &add_tree_to_OSM($t);
+	printf "New node link:\t\t%s\n", sprintf(OSM_NODE_URL_TMPL, $node_num);
+	last if $tree_num > 5;
 }
 printf "All done!\n";
