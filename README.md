@@ -27,7 +27,7 @@ OSM APIs:
 
 See [https://wiki.openstreetmap.org/wiki/API\_v0.6#Create:\_PUT\_.2Fapi.2F0.6.2F.5Bnode.7Cway.7Crelation.5D.2Fcreate](https://wiki.openstreetmap.org/wiki/API_v0.6#Create:_PUT_.2Fapi.2F0.6.2F.5Bnode.7Cway.7Crelation.5D.2Fcreate) for more info
 
-Additionally Overpass search API is used to check for duplicates.
+Additionally [Overpass search API](https://wiki.openstreetmap.org/wiki/Overpass_API) is used to check for duplicates.
 
 ## Running
 
