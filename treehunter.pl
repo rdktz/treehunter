@@ -41,7 +41,7 @@ OSM APIs:
 
 See L<https://wiki.openstreetmap.org/wiki/API_v0.6#Create:_PUT_.2Fapi.2F0.6.2F.5Bnode.7Cway.7Crelation.5D.2Fcreate> for more info
 
-Additionally Overpass search API is used to check for duplicates.
+Additionally L<Overpass search API|https://wiki.openstreetmap.org/wiki/Overpass_API> is used to check for duplicates.
 
 =head2 Running
 
@@ -81,7 +81,7 @@ $overpass_client->setFollow(1);
 # OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
 sub dump { print STDERR Dumper shift->as_string; return};
-my $trace_http = 1;
+my $trace_http = 0;
 
 if ($trace_http){
 	$overpass_ua->add_handler("request_send",  \&dump);
@@ -193,7 +193,7 @@ use constant OSM_NEW_CHANGESET_TMPL => '
 <osm>
 	<changeset version="0.6" generator="[% app_name %]">
 	<tag k="created_by" v="[% app_name %] [% app_version %]"/>
-	<tag k="description v="[% description %]"/></changeset>
+	<tag k="description" v="[% description %]"/></changeset>
 </osm>
 ';
 
