@@ -167,10 +167,11 @@ sub get_rpdp_trees {
 	    my $protected = $t->findvalue("IsProtected");
 		my $place_str = $t->findvalue("Localization");
 		my $url = sprintf URL_RPDP_TREE_TMPL, $tid;
-	
+		my $poor_gps = $t->findvalue("GPSInaccurate") || $t->findvalue("GPSVeryInaccurate");
 		my $osm_tree = { 
 			  website =>$url,
-			  source => URL_RPDP_BASE,
+			  source => $url,		# was originally URL_RPDP_BASE but changing to the specific tree page in case someone decides there is another, "official" web page
+			  						# e.g. http://crfop.gdos.gov.pl/CRFOP/widok/viewpomnikprzyrody.jsf?fop=PL.ZIPOP.1393.PP.1605032.289
 			  name => $name,
 			  age => $age,
 			  circumference => $circumference,
@@ -180,6 +181,7 @@ sub get_rpdp_trees {
 			  'species' => $species_lat,
 			  'species:pl' => $species_pl,
 			  'species:en' => $species_en,
+			  poor_gps => $poor_gps,
 			  polish => ($place_str =~ /Polska/i)
 			};
 		
@@ -302,10 +304,14 @@ do {
 	printf "Processing page %u (page size is %u)\n", $page_num, $page_size;
 	#print "Id,Name,Species (PL),Age,Circumference,GPS Lat, GPS Lon\n";
 	foreach my $t (@trees){
-		next unless $t->{name} && !($t->{name} =~ /^\s$/);
 		if (!(defined $t->{lat} && $t->{lat} != 0 && defined $t->{lon} && $t->{lon} != 0 )){
 			printf STDERR "Coords missing for tree %s (%u) .. SKIPPING\n", encode_utf8($t->{name} || 'unnamed'), $t->{tid};
 			$stat->{SKIPPED_NO_COORDS}++;
+			next;
+		}
+		if ($t->{poor_gps}){
+			printf STDERR "Poor GPS coords %s\n... SKIPPING\n", Dumper($t);
+			$stat->{SKIPPED_POOR_GPS}++;
 			next;
 		}
 		if (!($t->{polish})){ #outside Poland
@@ -325,5 +331,6 @@ do {
 		$stat->{ADDED_TO_OSM}++;
 	}
 	$page_num++;
+	printf "Current stats:\n%s", Dumper $stat;
 } while (@trees);
-printf "All done!\nStats:\n%s", Dumper $stat;
+printf "All done!\nFinal stats:\n%s", Dumper $stat;
