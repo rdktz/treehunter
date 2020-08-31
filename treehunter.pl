@@ -73,6 +73,7 @@ use JSON;
 use JSON::Parse;
 use Template;
 use MIME::Base64;
+use String::Util qw(trim);
 use constant APP_NAME => 'TreeHunter';
 use constant APP_VERSION => 0.6;
 
@@ -81,8 +82,15 @@ $overpass_client->setFollow(1);
 # OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
 sub dump { print STDERR Dumper shift->as_string; return};
-my $trace_http = 0;
+my $trace_http = 1;
 my $debug = 0;
+my $changeset = undef; # global OSM changeset for the whole run -  single chanset can accomodate up to 10k nodes, so no point to create mulltiple ( see https://wiki.openstreetmap.org/wiki/Changeset)
+my $tt = Template->new(INCLUDE_PATH => '.', POST_CHOMP => 1) || die $Template::ERROR, "\n";
+my $osm_client = REST::Client->new();
+$osm_client->setFollow(1);
+my $osm_ua = $osm_client->getUseragent();
+$osm_ua->add_handler("request_send",  \&dump) if $trace_http;
+$osm_ua->add_handler("response_done",  \&dump) if $trace_http;
 
 if ($trace_http){
 	$overpass_ua->add_handler("request_send",  \&dump);
@@ -165,6 +173,8 @@ sub get_rpdp_trees {
 	    my $lat= $t->findvalue("GPSLat");
 	    my $lon = $t->findvalue("GPSLong");
 	    my $protected = $t->findvalue("IsProtected");
+		my $class = trim($t->findvalue("Class"));
+	
 		my $place_str = $t->findvalue("Localization");
 		my $url = sprintf URL_RPDP_TREE_TMPL, $tid;
 		my $poor_gps = $t->findvalue("GPSInaccurate") || $t->findvalue("GPSVeryInaccurate");
@@ -182,6 +192,8 @@ sub get_rpdp_trees {
 			  'species:pl' => $species_pl,
 			  'species:en' => $species_en,
 			  poor_gps => $poor_gps,
+			  monument => $protected ? 'yes' : 'no',
+			  custom_class => $class,
 			  polish => ($place_str =~ /Polska/i)
 			};
 		
@@ -226,27 +238,19 @@ use constant OSM_SERVER_URL => 'https://master.apis.dev.openstreetmap.org';
 use constant OSM_NODE_URL_TMPL => 'https://master.apis.dev.openstreetmap.org/node/%u';
 use constant TREEHUNTER_GIT_URL => 'https://github.com/rdktz/treehunter';
 
-sub add_tree_to_OSM {
-	my $t = shift;
-	printf ("Will add this one to OSM: %s\n", Dumper $t) if $debug;
-	my $tt = Template->new(INCLUDE_PATH => '.', POST_CHOMP => 1) || die $Template::ERROR, "\n";
+sub get_OSM_change_set {
 	my $xml_tmpl  = OSM_NEW_CHANGESET_TMPL;
 	my $req_xml;
 	$tt->process(\$xml_tmpl, {
 		app_name => APP_NAME,
 		app_version => APP_VERSION,
-		comment => "Adding tree based on RPDP site",
+		comment => "Adding trees based on RPDP site",
 		description => &TREEHUNTER_GIT_URL,
 		#hint => sprintf "Found an problem with the added tree? Log an issue in GitHub %s/issues" . TREEHUNTER_GIT_URL
 		},
 		\$req_xml
 	)  || die $tt->error(), "\n";
 	#print "------------------\n$req_xml\n\n";
-	my $osm_client = REST::Client->new();
-	$osm_client->setFollow(1);
-	my $osm_ua = $osm_client->getUseragent();
-	$osm_ua->add_handler("request_send",  \&dump) if $trace_http;
-	$osm_ua->add_handler("response_done",  \&dump) if $trace_http;
 	$osm_client->PUT(
 		sprintf ('%s%s', OSM_SERVER_URL, '/api/0.6/changeset/create'),
 		$req_xml,
@@ -258,11 +262,18 @@ sub add_tree_to_OSM {
 	) or die "$!";
 	die $osm_client->responseContent unless $osm_client->responseCode() eq '200';
 	my $changeset = decode_utf8($osm_client->responseContent) || die "Cannot decode REST service reponse";
+	die "Wrong changeset number unless " unless $changeset > 1;
+	return $changeset;
+}
+
+sub add_tree_to_OSM {
+	my $t = shift;
+	printf ("Will add this one to OSM: %s\n", Dumper $t) if $debug;
 	my $req_xml;
-	$xml_tmpl = OSM_NEW_NODE_TMPL;
-	# 
+	my $xml_tmpl = OSM_NEW_NODE_TMPL;
+	#  filter the tags and leave only OSM tree standard - see https://wiki.openstreetmap.org/wiki/Tag:natural=tree
 	my $tags; 
-	map { $tags->{$_} = $t->{$_} unless /^(lat|lon|tid|polish)$/} keys(%$t);
+	map { $tags->{$_} = $t->{$_} unless /^(lat|lon|tid|polish|custom_class)$/} keys(%$t);
 	# add some OSM specific tags
 	$tags->{&OSM_TAG_KEY_DENOTATION} = OSM_TAG_VAL_NATURAL_MONUMENT;
 	$tags->{&OSM_TAG_KEY_NATURAL} = OSM_TAG_VAL_TREE;
@@ -299,6 +310,7 @@ my $page_size=25;
 my $tree_num=0;
 my @trees;
 my $stat = {};
+$changeset = &get_OSM_change_set; # get change set once
 do { 
 	@trees=&get_rpdp_trees(undef,$page_num,$page_size);
 	printf "Processing page %u (page size is %u)\n", $page_num, $page_size;
@@ -318,6 +330,11 @@ do {
 			printf STDERR "Ouside Poland - SKIPPING for now\n";
 			$stat->{SKIPPED_OUTSIZE_POLAND}++;
 			next;	
+		}
+		if (!($t->{monument} =~ /yes/) && !($t->{custom_class} =~ /^(A|B)$/ )){
+			printf STDERR "Class < B and not a monument: %s\n", Dumper($t);
+			$stat->{SKIPPED_LOW_CLASS_NON_MONUMENT}++;
+			next;
 		}
 		if(my $t2 = check_if_exists_in_osm($t->{lat},$t->{lon})){
 			printf STDERR "Tree nearby %s in OSM! %s\n... SKIPPING\n", Dumper($t), Dumper($t2);
