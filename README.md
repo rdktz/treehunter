@@ -12,7 +12,7 @@ Currently the script uses only a subset of those, namely:
 - Species:PL
 - Procted -> yes/no
 - Name
-- Source -> RPDP
+- Source -> RPDP main site link as suggested in https://forum.openstreetmap.org/viewtopic.php?id=70465
 
     Sample tree added by the script: [https://master.apis.dev.openstreetmap.org/node/4319597672](https://master.apis.dev.openstreetmap.org/node/4319597672) (DEV OSM server)
 
