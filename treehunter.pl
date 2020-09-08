@@ -82,7 +82,7 @@ $overpass_client->setFollow(1);
 # OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
 sub dump { print STDERR Dumper shift->as_string; return};
-my $trace_http = 1;
+my $trace_http = 0;
 my $debug = 0;
 my $tt = Template->new(INCLUDE_PATH => '.', POST_CHOMP => 1) || die $Template::ERROR, "\n";
 my $osm_client = REST::Client->new();
@@ -342,9 +342,9 @@ do {
 			$stat->{SKIPPED_OUTSIZE_POLAND}++;
 			next;	
 		}
-		if (!($t->{monument} =~ /yes/) && !($t->{custom_class} =~ /^(A|B)$/ )){
-			printf STDERR "Class < B and not a monument: %s\n", Dumper($t);
-			$stat->{SKIPPED_LOW_CLASS_NON_MONUMENT}++;
+		if (!($t->{protected} =~ /yes/) && !($t->{custom_class} =~ /^(A|B)$/ )){
+			printf STDERR "Class < B and not protected by law %s\n", Dumper($t);
+			$stat->{SKIPPED_LOW_CLASS_NOT_PROTECTED}++;
 			next;
 		}
 		if(my $t2 = check_if_exists_in_osm($t->{lat},$t->{lon})){
