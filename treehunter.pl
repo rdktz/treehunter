@@ -82,8 +82,8 @@ $overpass_client->setFollow(1);
 # OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
 sub dump { print STDERR Dumper shift->as_string; return};
-my $trace_http = 0;
-my $debug = 0;
+my $trace_http = 1;
+my $debug = 1;
 my $tt = Template->new(INCLUDE_PATH => '.', POST_CHOMP => 1) || die $Template::ERROR, "\n";
 my $osm_client = REST::Client->new();
 $osm_client->setFollow(1);
@@ -161,11 +161,20 @@ sub get_rpdp_trees {
 	foreach my $t ($dom->findnodes('//NewDataSet/Table')) {
 	    my $name = $t->findvalue("Name"); 
 		$name =~ s/"//g;
+		if ($name=~ /aleja|,/i){
+			#something fishy about the name - probably this does not describe one tree well
+			printf "Removed suspicious tree name '%s'\n", $name;
+			$name= undef;
+		}
 	    my $species_pl = $t->findvalue("SpeciesPL");
 	    my $species_en= $t->findvalue("SpeciesEN");
 	    my $species_lat = $t->findvalue("SpeciesLat");
 	    my $age = $t->findvalue("Age");
-		my $start_date = time2str('%Y',time) - $age if $age;
+		my $start_date;
+		if ($age) {
+			$start_date = time2str('%Y',time) - $age;
+			$start_date = sprintf('~%s', $start_date - $start_date % 10), # round the date and add tilde for the approx planted date
+		};
 	    my $circumference= $t->findvalue("Girth");
 	    my $height = $t->findvalue("Height");
 	    my $is_bush = $t->findvalue("Bush");
@@ -183,7 +192,7 @@ sub get_rpdp_trees {
 		my $poor_gps = $t->findvalue("GPSInaccurate") || $t->findvalue("GPSVeryInaccurate");
 		my $osm_tree = { 
 			  website =>$url,
-			  source => URL_RPDP_BASE,		# using URL_RPDP_BASE as originally planned
+			  # source => URL_RPDP_BASE,		# source:website instead
 			  name => $name,
 			  # age => $age,  # use start_date as suggested in https://forum.openstreetmap.org/viewtopic.php?id=70465
 			  circumference => $circumference,
@@ -237,6 +246,8 @@ use constant OSM_TAG_KEY_DENOTATION => 'denotation';
 use constant OSM_TAG_VAL_NATURAL_MONUMENT=> 'natural_monument';
 use constant OSM_TAG_KEY_NATURAL=> 'natural';
 use constant OSM_TAG_VAL_TREE => 'tree';
+use constant OSM_TAG_KEY_SOURCE_SITE => 'source:website';
+use constant OSM_TAG_KEY_SOURCE_DATE => 'source:date';
 
 use constant OSM_SERVER_URL => 'https://master.apis.dev.openstreetmap.org';
 use constant OSM_NODE_URL_TMPL => 'https://master.apis.dev.openstreetmap.org/node/%u';
@@ -289,6 +300,9 @@ sub add_tree_to_OSM {
 	# add some OSM specific tags
 	$tags->{&OSM_TAG_KEY_DENOTATION} = OSM_TAG_VAL_NATURAL_MONUMENT;
 	$tags->{&OSM_TAG_KEY_NATURAL} = OSM_TAG_VAL_TREE;
+	$tags->{&OSM_TAG_KEY_SOURCE_SITE} = URL_RPDP_BASE ;
+	$tags->{&OSM_TAG_KEY_SOURCE_DATE} = time2str('%Y',time);
+	
 	$tt->process(\$xml_tmpl, {
 			change_num => $changeset,
 			lon => $t->{lon},
