@@ -45,7 +45,25 @@ Additionally L<Overpass search API|https://wiki.openstreetmap.org/wiki/Overpass_
 
 =head2 Running
 
-Set OSM_USER and OSM_PASSWD environment variables for authentication the calls to OSM
+Supported command line options:
+
+=over 4
+
+=item * osm_user
+
+=item * osm_pass
+
+=item * debug
+
+=item * http_trace
+
+=item * instance - PROD/DEV (default is DEV)
+
+=back
+
+Example:
+
+treehunter.pl --osm_user=az.zdzi@yahoo.com --osm_pass *** --instance=DEV
 
 =head2 Bugs and Help
 
@@ -74,33 +92,58 @@ use JSON::Parse;
 use Template;
 use MIME::Base64;
 use String::Util qw(trim);
+my ($opt_osm_user, $opt_osm_pass, $opt_instance, $opt_max_new, $opt_debug, $opt_http_trace);
+use Getopt::Long qw( GetOptions );
+GetOptions( 
+	"osm_user=s" => \$opt_osm_user,
+	"osm_pass=s", => \$opt_osm_pass, 
+	"instance=s", => \$opt_instance,
+	"max_new=i" => \$opt_max_new,
+	"debug" => \$opt_debug,
+	"http_trace"=> \$opt_http_trace);
+
 use constant APP_NAME => 'TreeHunter';
-use constant APP_VERSION => 0.7;
+use constant APP_VERSION => 0.8;
+
+# BASIC APP CONFIG
+use constant OSM_SERVER_URL_DEV=> 'https://master.apis.dev.openstreetmap.org';
+use constant OSM_SERVER_URL_PROD => 'https://api.openstreetmap.orx' ;
+my $osm_server_url;
+if ($opt_instance =~ /PROD/){
+		printf "Are you sure this should be run against PROD OSM instance?! If so, please type 'PROD':";
+		my $conf = <>;
+		die "PROD unconfirmed" unless $conf =~ /^PROD$/;
+		$osm_server_url = OSM_SERVER_URL_PROD;
+} else {
+	$osm_server_url = OSM_SERVER_URL_DEV;
+}
+
+die "Missing user or password for OSM API" unless $opt_osm_user && $opt_osm_pass;
 
 my $overpass_client = REST::Client->new();
 $overpass_client->setFollow(1);
 # OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
 sub dump { print STDERR Dumper shift->as_string; return};
-my $trace_http = 1;
-my $debug = 1;
 my $tt = Template->new(INCLUDE_PATH => '.', POST_CHOMP => 1) || die $Template::ERROR, "\n";
 my $osm_client = REST::Client->new();
 $osm_client->setFollow(1);
 my $osm_ua = $osm_client->getUseragent();
-$osm_ua->add_handler("request_send",  \&dump) if $trace_http;
-$osm_ua->add_handler("response_done",  \&dump) if $trace_http;
+$osm_ua->add_handler("request_send",  \&dump) if $opt_http_trace;
+$osm_ua->add_handler("response_done",  \&dump) if $opt_http_trace;
 
-if ($trace_http){
+if ($opt_http_trace){
 	$overpass_ua->add_handler("request_send",  \&dump);
 	$overpass_ua->add_handler("response_done",  \&dump);
 	$ua->add_handler("request_send",  \&dump);
 	$ua->add_handler("response_done",  \&dump);
 }
 
+### END config
+
 sub run_overpass_query {
 	my $query = shift;
-    print "Calling overpass API for query\n$query\n" if $debug;
+    print "Calling overpass API for query\n$query\n" if $opt_debug;
 	$overpass_client->GET(
 		# see https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances
 		# for server links
@@ -131,7 +174,7 @@ use constant OSM_NEAR_RADIUS => 100; # meters
 sub check_if_exists_in_osm {
 	my ($lat,$lon,$radius) = @_;
 	my $elems = &run_overpass_query(sprintf OSM_QUERY_TREES_NEARBY_TMPL,OSM_NEAR_RADIUS,$lat,$lon);
-	print Dumper $elems if $debug;
+	print Dumper $elems if $opt_debug;
 	return shift @$elems;
 }
  
@@ -249,7 +292,6 @@ use constant OSM_TAG_VAL_TREE => 'tree';
 use constant OSM_TAG_KEY_SOURCE_SITE => 'source:website';
 use constant OSM_TAG_KEY_SOURCE_DATE => 'source:date';
 
-use constant OSM_SERVER_URL => 'https://master.apis.dev.openstreetmap.org';
 use constant OSM_NODE_URL_TMPL => 'https://master.apis.dev.openstreetmap.org/node/%u';
 use constant TREEHUNTER_GIT_URL => 'https://github.com/rdktz/treehunter';
 
@@ -272,12 +314,12 @@ sub get_OSM_change_set {
 	)  || die $tt->error(), "\n";
 	#print "------------------\n$req_xml\n\n";
 	$osm_client->PUT(
-		sprintf ('%s%s', OSM_SERVER_URL, '/api/0.6/changeset/create'),
+		sprintf ('%s%s', $osm_server_url, '/api/0.6/changeset/create'),
 		encode_utf8($req_xml),
 		{
 			'Content-Type'=>'application/x-www-form-urlencoded',
 			'accept' => '*/*',
-			'Authorization' => sprintf 'Basic %s', encode_base64(sprintf '%s:%s', $ENV{OSM_USER}, $ENV{OSM_PASSWD})
+			'Authorization' => sprintf 'Basic %s', encode_base64(sprintf '%s:%s', $opt_osm_user, $opt_osm_pass)
 		}
 	) or die "$!";
 	die $osm_client->responseContent unless $osm_client->responseCode() eq '200';
@@ -291,7 +333,7 @@ sub get_OSM_change_set {
 sub add_tree_to_OSM {
 	my $t = shift;
 	my $changeset = shift;
-	printf ("Will add this one to OSM: %s\n", Dumper $t) if $debug;
+	printf ("Will add this one to OSM: %s\n", Dumper $t) if $opt_debug;
 	my $req_xml;
 	my $xml_tmpl = OSM_NEW_NODE_TMPL;
 	#  filter the tags and leave only OSM tree standard - see https://wiki.openstreetmap.org/wiki/Tag:natural=tree
@@ -301,7 +343,7 @@ sub add_tree_to_OSM {
 	$tags->{&OSM_TAG_KEY_DENOTATION} = OSM_TAG_VAL_NATURAL_MONUMENT;
 	$tags->{&OSM_TAG_KEY_NATURAL} = OSM_TAG_VAL_TREE;
 	$tags->{&OSM_TAG_KEY_SOURCE_SITE} = URL_RPDP_BASE ;
-	$tags->{&OSM_TAG_KEY_SOURCE_DATE} = time2str('%Y',time);
+	#$tags->{&OSM_TAG_KEY_SOURCE_DATE} = time2str('%Y',time); # not really convinced this is useful
 	
 	$tt->process(\$xml_tmpl, {
 			change_num => $changeset,
@@ -311,25 +353,24 @@ sub add_tree_to_OSM {
 		},
 		\$req_xml
 	)  || die $tt->error(), "\n";
-	print "------------------\n$req_xml\n\n" if $debug;
+	print "------------------\n$req_xml\n\n" if $opt_debug;
 	$osm_client->PUT(
-		sprintf ('%s%s', OSM_SERVER_URL, '/api/0.6/node/create'),
+		sprintf ('%s%s', $osm_server_url, '/api/0.6/node/create'),
 		encode_utf8($req_xml),
 		{
 			'Content-Type'=>'application/x-www-form-urlencoded',
 			'accept' => '*/*',
-			'Authorization' => sprintf 'Basic %s', encode_base64(sprintf '%s:%s', $ENV{OSM_USER}, $ENV{OSM_PASSWD})
+			'Authorization' => sprintf 'Basic %s', encode_base64(sprintf '%s:%s', $opt_osm_user, $opt_osm_pass)
 		}
 	)  or die "$!";
 
 	die $osm_client->responseContent unless $osm_client->responseCode() eq '200';
 	my $new_node_num = $osm_client->responseContent + 0;
 	#printf STDERR Dumper  $osm_client->responseContent unless $new_node_num > 0;
-	printf "Got new node num %u\n", $new_node_num if $debug;
+	printf "Got new node num %u\n", $new_node_num if $opt_debug;
 	return $new_node_num;
 }
 
-die "Missing OSM credentials\n" unless $ENV{OSM_USER} && $ENV{OSM_PASSWD};
 my @recent_trees;
 my $page_num =1; 
 my $page_size=25;
@@ -341,6 +382,10 @@ do {
 	printf "Processing page %u (page size is %u)\n", $page_num, $page_size;
 	#print "Id,Name,Species (PL),Age,Circumference,GPS Lat, GPS Lon\n";
 	foreach my $t (@trees){
+		if ($opt_max_new && $stat->{ADDED_TO_OSM} >= $opt_max_new){
+			printf "Forcing quick after %u of new records\n", $opt_max_new;
+			exit 0;
+		}
 		if (!(defined $t->{lat} && $t->{lat} != 0 && defined $t->{lon} && $t->{lon} != 0 )){
 			printf STDERR "Coords missing for tree %s (%u) .. SKIPPING\n", encode_utf8($t->{name} || 'unnamed'), $t->{tid};
 			$stat->{SKIPPED_NO_COORDS}++;
