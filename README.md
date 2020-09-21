@@ -31,7 +31,17 @@ Additionally [Overpass search API](https://wiki.openstreetmap.org/wiki/Overpass_
 
 ## Running
 
-Set OSM\_USER and OSM\_PASSWD environment variables for authentication the calls to OSM
+Supported command line options:
+
+- osm\_user
+- osm\_pass
+- debug
+- http\_trace
+- instance - PROD/DEV (default is DEV)
+
+Example:
+
+treehunter.pl --osm\_user=az.zdzi@yahoo.com --osm\_pass \*\*\* --instance=DEV
 
 ## Bugs and Help
 
