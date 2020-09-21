@@ -107,7 +107,7 @@ use constant APP_VERSION => 0.8;
 
 # BASIC APP CONFIG
 use constant OSM_SERVER_URL_DEV=> 'https://master.apis.dev.openstreetmap.org';
-use constant OSM_SERVER_URL_PROD => 'https://api.openstreetmap.orx' ;
+use constant OSM_SERVER_URL_PROD => 'https://api.openstreetmap.org' ;
 my $osm_server_url;
 if ($opt_instance =~ /PROD/){
 		printf "Are you sure this should be run against PROD OSM instance?! If so, please type 'PROD':";
