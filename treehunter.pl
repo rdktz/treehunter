@@ -1,3 +1,4 @@
+#!/usr/bin/perl
 =head1 TreeHunter - a script to replicate Polish Monumental Tree Registry to OSM 
 
 =head2 Tags
@@ -21,7 +22,7 @@ Currently the script uses only a subset of those, namely:
 
 =item * Source -> RPDP main site link as suggested in https://forum.openstreetmap.org/viewtopic.php?id=70465
 
-Sample tree added by the script: L<https://master.apis.dev.openstreetmap.org/node/4319597672> (DEV OSM server)
+Sample tree added by the script: L<https://master.apis.dev.openstreetmap.org/node/4324532379> (DEV OSM server)
 
 =item * Website -> RPDP link
 
@@ -57,13 +58,21 @@ Supported command line options:
 
 =item * http_trace
 
+=item * skip_first X entries that would otherwise be added
+
+=item * quit_after adding X new OSM trees
+
 =item * instance - PROD/DEV (default is DEV)
 
 =back
 
-Example:
+Examples:
 
-treehunter.pl --osm_user=az.zdzi@yahoo.com --osm_pass *** --instance=DEV
+$ ./treehunter.pl --osm_user=az.zdzi@yahoo.com --osm_pass *** --instance=DEV
+
+$ ./treehunter.pl --osm_user=az.zdzi@yahoo.com --osm_pass *** --instance=DEV --debug --http_trace --quit_after 1  \
+	> 1>treehunter_`date +"%F_%H.%M.%S"`.out.txt 2>treehunter_`date +"%F_%H.%M.%S"`.err.txt
+
 
 =head2 Bugs and Help
 
@@ -80,6 +89,7 @@ use XML::LibXML;
 use Data::Dumper;
 use Date::Parse;
 use Date::Format; # -e "print time2str('%c',str2time('9-03-2012 11:26:00 CET')-1526,'CET');"
+use POSIX 'ceil';
 my $ua = LWP::UserAgent->new;
 $ua->agent("treehunter/0.1 ");
 use utf8;
@@ -92,15 +102,18 @@ use JSON::Parse;
 use Template;
 use MIME::Base64;
 use String::Util qw(trim);
-my ($opt_osm_user, $opt_osm_pass, $opt_instance, $opt_max_new, $opt_debug, $opt_http_trace);
+my ($opt_osm_user, $opt_osm_pass, $opt_instance, $opt_max_new, $opt_debug, $opt_http_trace, $opt_skip_first, $opt_quit_after);
 use Getopt::Long qw( GetOptions );
 GetOptions( 
 	"osm_user=s" => \$opt_osm_user,
 	"osm_pass=s", => \$opt_osm_pass, 
 	"instance=s", => \$opt_instance,
 	"max_new=i" => \$opt_max_new,
+	"skip_first=i" => \$opt_skip_first, # skip first X OSM tree additions
+	"quit_after=i" => \$opt_quit_after,  # quit after X'th OSM tree addition
 	"debug" => \$opt_debug,
-	"http_trace"=> \$opt_http_trace);
+	"http_trace"=> \$opt_http_trace
+);
 
 use constant APP_NAME => 'TreeHunter';
 use constant APP_VERSION => 0.8;
@@ -108,23 +121,27 @@ use constant APP_VERSION => 0.8;
 # BASIC APP CONFIG
 use constant OSM_SERVER_URL_DEV=> 'https://master.apis.dev.openstreetmap.org';
 use constant OSM_SERVER_URL_PROD => 'https://api.openstreetmap.org' ;
+open(my $log, '> :encoding(UTF-8)', sprintf ('treehunter_%s.log.txt', time2str('%Y%m%d%H%M%S',time))); 
 my $osm_server_url;
 if ($opt_instance =~ /PROD/){
-		printf "Are you sure this should be run against PROD OSM instance?! If so, please type 'PROD':";
+		printf "Are you sure this should be run against PROD OSM instance?! If so, please type 'PROD':\n";
 		my $conf = <>;
 		die "PROD unconfirmed" unless $conf =~ /^PROD$/;
 		$osm_server_url = OSM_SERVER_URL_PROD;
+		printf $log "Using the PROD istnance\n";
 } else {
+	printf $log "Using the DEV istnance\n";
+	printf "Using the DEV istnance\n";
 	$osm_server_url = OSM_SERVER_URL_DEV;
 }
-
 die "Missing user or password for OSM API" unless $opt_osm_user && $opt_osm_pass;
 
+# OPTIONAL LWP settings
 my $overpass_client = REST::Client->new();
 $overpass_client->setFollow(1);
-# OPTIONAL LWP settings
 my $overpass_ua = $overpass_client->getUseragent();
-sub dump { print STDERR Dumper shift->as_string; return};
+# TODO: check why printf doesn't work here. Is this linked to some cygwin specific locking?
+sub dump { print $log Dumper(shift->as_string); return};
 my $tt = Template->new(INCLUDE_PATH => '.', POST_CHOMP => 1) || die $Template::ERROR, "\n";
 my $osm_client = REST::Client->new();
 $osm_client->setFollow(1);
@@ -140,17 +157,93 @@ if ($opt_http_trace){
 }
 
 ### END config
+#
+
+#use contract DEFAULT_OSM_SERVER => 'http://overpass.openstreetmap.fr';
+use constant DEFAULT_OSM_SERVER => 'http://lz4.overpass-api.de';
+use constant OSM_STATUS_RETRIES => 10;
+use constant OSM_QUERY_RETRY_SECS => 10; # this should not really happen with the status check for free slots but it does happen
+use constant OSM_QUERY_RETRIES => 5;
 
 sub run_overpass_query {
 	my $query = shift;
-    print "Calling overpass API for query\n$query\n" if $opt_debug;
+	my $i=0;
+	while ($i++ < OSM_STATUS_RETRIES) {
+		my $delay = &time_till_free_slot;
+		last unless $delay; # need to wait a few secs?
+		my $msg = sprintf "No free Overpass API slots.. sleeping for %u seconds\n", $delay;
+		printf $log $msg;
+		printf STDERR $msg;
+		sleep $delay;
+	}
+	
+    printf $log "Calling overpass API for query\n$query\n" if $opt_debug;
+	my $osm_server = $ENV{OSM_SERVER} || DEFAULT_OSM_SERVER;
+	$i=0;
+	while ( $i++ < OSM_QUERY_RETRIES) {
+		$overpass_client->GET(
+			# see https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances
+			# for server links
+			# main URL:
+			# 'http://overpass-api.de/api/interpreter',
+			# but this seems to be less used
+			sprintf ('%s/api/interpreter?data=%s', $osm_server, uri_escape(encode_utf8($query))),
+			{
+				#'Content-Type'=>'application/x-www-form-urlencoded',
+				'accept' => '*/*',
+				'Content-type' => 'application/json;charset=utf-8'
+				#				#'Authorization' => sprintf 'Bearer %s', $token
+				#					}
+			}
+		);
+		my $code = $overpass_client->responseCode;
+		my $err_msg = sprintf "Overpass query failed with status %u. Going to retry..\n", $code;
+		if ($code==200){
+			last;
+		} else {
+			printf $log $err_msg;
+			printf STDERR $err_msg;
+			if (OSM_QUERY_RETRIES <= $i) {
+				printf STDERR $overpass_client->responseContent;
+				die "Couldn't execute the query despite multiple retries";
+			}
+			sleep OSM_QUERY_RETRY_SECS;
+		}
+	} 
+	my $json = decode_utf8($overpass_client->responseContent);
+	my $elems = from_json($json)->{elements} || die "FAILED to run the overpass query\n";
+	return $elems;
+}
+
+#
+#	sample response when slots are available
+#
+#	Connected as: 1394412879
+#	Current time: 2020-11-18T13:19:13Z
+#	Rate limit: 2
+#	1 slots available now.
+#	Slot available after: 2020-11-18T13:19:18Z, in 5 seconds.
+#	Currently running queries (pid, space limit, time limit, start time):
+#
+#	sample response when slots are NOT available
+#
+#	Connected as: 1394412879
+#	Current time: 2020-11-18T13:19:10Z
+#	Rate limit: 2
+#	Slot available after: 2020-11-18T13:19:11Z, in 1 seconds.
+#	Slot available after: 2020-11-18T13:19:18Z, in 8 seconds.
+#	Currently running queries (pid, space limit, time limit, start time):
+#
+# 	REFERENCES: 
+# 		https://github.com/drolbr/Overpass-API/issues/580
+#	
+#	TODO: we should ideally check all slots but it seems they are storted ascending by time-to-go 
+#
+sub time_till_free_slot {
+    printf $log "Calling overpass API status end-point" if $opt_debug;
+	my $osm_server = $ENV{OSM_SERVER} || DEFAULT_OSM_SERVER;
 	$overpass_client->GET(
-		# see https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances
-		# for server links
-		# main URL:
-		# 'http://overpass-api.de/api/interpreter',
-		# but this seems to be less used
-		sprintf ('http://overpass.openstreetmap.fr/api/interpreter?data=%s', uri_escape(encode_utf8($query))),
+		sprintf ('%s/api/status', $osm_server),
 		{
 			#'Content-Type'=>'application/x-www-form-urlencoded',
 			'accept' => '*/*',
@@ -159,9 +252,12 @@ sub run_overpass_query {
 			#					}
 		}
 	);
-	my $json = decode_utf8($overpass_client->responseContent);
-	my $elems = from_json($json)->{elements} || die "FAILED to run the overpass query\n";
-	return $elems;
+	my $txt= decode_utf8($overpass_client->responseContent);
+	if ($txt =~ m/(\d+) slots available now/i){
+		return 0;
+	}
+	$txt =~ m/Slot available after.*in\s+(\d+)\s+seconds/i;
+	return $1;
 }
 
 use constant OSM_QUERY_TREES_NEARBY_TMPL => '
@@ -174,7 +270,7 @@ use constant OSM_NEAR_RADIUS => 100; # meters
 sub check_if_exists_in_osm {
 	my ($lat,$lon,$radius) = @_;
 	my $elems = &run_overpass_query(sprintf OSM_QUERY_TREES_NEARBY_TMPL,OSM_NEAR_RADIUS,$lat,$lon);
-	print Dumper $elems if $opt_debug;
+	printf $log Dumper( $elems) if $opt_debug;
 	return shift @$elems;
 }
  
@@ -206,7 +302,7 @@ sub get_rpdp_trees {
 		$name =~ s/"//g;
 		if ($name=~ /aleja|,/i){
 			#something fishy about the name - probably this does not describe one tree well
-			printf "Removed suspicious tree name '%s'\n", $name;
+			printf $log "Removed suspicious tree name '%s'\n", $name;
 			$name= undef;
 		}
 	    my $species_pl = $t->findvalue("SpeciesPL");
@@ -259,7 +355,7 @@ sub get_rpdp_trees {
 		
 		push @trees, $osm_tree; 
 	}
-	printf "Found %u more trees\n", scalar(@trees);
+	printf $log "Found %u more trees\n", scalar(@trees);
 	return @trees;
 }
 
@@ -325,7 +421,7 @@ sub get_OSM_change_set {
 	die $osm_client->responseContent unless $osm_client->responseCode() eq '200';
 	my $changeset = decode_utf8($osm_client->responseContent) || die "Cannot decode REST service reponse";
 	die "Wrong changeset number unless " unless $changeset > 1;
-	printf "Storing changeset %u for scope '%s'\n", $changeset, $scope;
+	printf $log "Storing changeset %u for scope '%s'\n", $changeset, $scope;
 	$changesets->{$scope} = $changeset;
 	return $changeset;
 }
@@ -333,7 +429,7 @@ sub get_OSM_change_set {
 sub add_tree_to_OSM {
 	my $t = shift;
 	my $changeset = shift;
-	printf ("Will add this one to OSM: %s\n", Dumper $t) if $opt_debug;
+	printf $log ("Will add this one to OSM: %s\n", Dumper $t) if $opt_debug;
 	my $req_xml;
 	my $xml_tmpl = OSM_NEW_NODE_TMPL;
 	#  filter the tags and leave only OSM tree standard - see https://wiki.openstreetmap.org/wiki/Tag:natural=tree
@@ -353,7 +449,7 @@ sub add_tree_to_OSM {
 		},
 		\$req_xml
 	)  || die $tt->error(), "\n";
-	print "------------------\n$req_xml\n\n" if $opt_debug;
+	printf $log "------------------\n$req_xml\n\n" if $opt_debug;
 	$osm_client->PUT(
 		sprintf ('%s%s', $osm_server_url, '/api/0.6/node/create'),
 		encode_utf8($req_xml),
@@ -366,58 +462,75 @@ sub add_tree_to_OSM {
 
 	die $osm_client->responseContent unless $osm_client->responseCode() eq '200';
 	my $new_node_num = $osm_client->responseContent + 0;
-	#printf STDERR Dumper  $osm_client->responseContent unless $new_node_num > 0;
-	printf "Got new node num %u\n", $new_node_num if $opt_debug;
+	#printf $log STDERR Dumper  $osm_client->responseContent unless $new_node_num > 0;
+	printf $log "Got new node num %u\n", $new_node_num if $opt_debug;
 	return $new_node_num;
 }
 
-my @recent_trees;
-my $page_num =1; 
-my $page_size=25;
-my $tree_num=0;
-my @trees;
 my $stat = {};
-do {
-	@trees=&get_rpdp_trees(undef,$page_num,$page_size);
-	printf "Processing page %u (page size is %u)\n", $page_num, $page_size;
-	#print "Id,Name,Species (PL),Age,Circumference,GPS Lat, GPS Lon\n";
-	foreach my $t (@trees){
-		if ($opt_max_new && $stat->{ADDED_TO_OSM} >= $opt_max_new){
-			printf "Forcing quick after %u of new records\n", $opt_max_new;
-			exit 0;
+sub process {
+	my @recent_trees;
+	my $page_num =1; 
+	my $page_size=25;
+	my $tree_num=0;
+	my @trees;
+	do {
+		@trees=&get_rpdp_trees(undef,$page_num,$page_size);
+		printf $log "Processing page %u (page size is %u)\n", $page_num, $page_size;
+		#print "Id,Name,Species (PL),Age,Circumference,GPS Lat, GPS Lon\n";
+		foreach my $t (@trees){
+			if ($opt_quit_after && $stat->{ADDED_TO_OSM} >= $opt_quit_after) {
+				return;
+			}
+			if ($opt_max_new && $stat->{ADDED_TO_OSM} >= $opt_max_new){
+				printf $log "Forcing quick after %u of new records\n", $opt_max_new;
+				exit 0;
+			}
+			if (!(defined $t->{lat} && $t->{lat} != 0 && defined $t->{lon} && $t->{lon} != 0 )){
+				printf $log "Coords missing for tree %s (%u) .. SKIPPING\n", encode_utf8($t->{name} || 'unnamed'), $t->{tid};
+				$stat->{SKIPPED_NO_COORDS}++;
+				next;
+			}
+			if ($t->{poor_gps}){
+				printf $log  "Poor GPS coords %s\n... SKIPPING\n", Dumper($t);
+				$stat->{SKIPPED_POOR_GPS}++;
+				next;
+			}
+			if (!($t->{pl_voivodship})){ #outside Poland
+				printf TDERR "Ouside Poland - SKIPPING for now\n";
+				$stat->{SKIPPED_OUTSIZE_POLAND}++;
+				next;	
+			}
+			if (!($t->{protected} =~ /yes/) && !($t->{custom_class} =~ /^(A|B)$/ )){
+				printf $log  "Class < B and not protected by law %s\n", Dumper($t);
+				$stat->{SKIPPED_LOW_CLASS_NOT_PROTECTED}++;
+				next;
+			}
+			if(my $t2 = check_if_exists_in_osm($t->{lat},$t->{lon})){
+				printf $log  "Tree nearby %s in OSM! %s\n... SKIPPING\n", Dumper($t), Dumper($t2);
+				$stat->{SKIPPED_EXISTS}++;
+				next;
+			}
+			if ($opt_skip_first && $stat->{SKIPPED_FIRST_X} < $opt_skip_first) {
+				printf $log  "SKIPPING first X trees inlcluding %s\n", Dumper($t);
+				$stat->{SKIPPED_FIRST_X}++;
+				next;
+			}
+			my $node_num = &add_tree_to_OSM($t, &get_OSM_change_set($t->{pl_voivodship}));
+			printf $log "New oSM node link: %s referencing RPDP tree %s\n", 
+				sprintf(OSM_NODE_URL_TMPL, $node_num),
+				sprintf URL_RPDP_TREE_TMPL, $t->{website};
+			$stat->{ADDED_TO_OSM}++;
 		}
-		if (!(defined $t->{lat} && $t->{lat} != 0 && defined $t->{lon} && $t->{lon} != 0 )){
-			printf STDERR "Coords missing for tree %s (%u) .. SKIPPING\n", encode_utf8($t->{name} || 'unnamed'), $t->{tid};
-			$stat->{SKIPPED_NO_COORDS}++;
-			next;
+		$page_num++;
+		$tree_num+=scalar @trees;
+		printf $log "Current stats:\n%s", Dumper $stat;
+		if (ceil($tree_num/100) != ceil(($tree_num - scalar(@trees)) / 100)) {
+			printf STDERR "Processed %u trees from RPDP\n", $tree_num;
 		}
-		if ($t->{poor_gps}){
-			printf STDERR "Poor GPS coords %s\n... SKIPPING\n", Dumper($t);
-			$stat->{SKIPPED_POOR_GPS}++;
-			next;
-		}
-		if (!($t->{pl_voivodship})){ #outside Poland
-			printf STDERR "Ouside Poland - SKIPPING for now\n";
-			$stat->{SKIPPED_OUTSIZE_POLAND}++;
-			next;	
-		}
-		if (!($t->{protected} =~ /yes/) && !($t->{custom_class} =~ /^(A|B)$/ )){
-			printf STDERR "Class < B and not protected by law %s\n", Dumper($t);
-			$stat->{SKIPPED_LOW_CLASS_NOT_PROTECTED}++;
-			next;
-		}
-		if(my $t2 = check_if_exists_in_osm($t->{lat},$t->{lon})){
-			printf STDERR "Tree nearby %s in OSM! %s\n... SKIPPING\n", Dumper($t), Dumper($t2);
-			$stat->{SKIPPED_EXISTS}++;
-			next;
-		}
-		my $node_num = &add_tree_to_OSM($t, &get_OSM_change_set($t->{pl_voivodship}));
-		printf "New oSM node link: %s referencing RPDP tree %s\n", 
-			sprintf(OSM_NODE_URL_TMPL, $node_num),
-			sprintf URL_RPDP_TREE_TMPL, $t->{website};
-		$stat->{ADDED_TO_OSM}++;
-	}
-	$page_num++;
-	printf "Current stats:\n%s", Dumper $stat;
-} while (@trees);
+	} while (@trees);
+}
+
+&process;
+printf $log "All done!\nFinal stats:\n%s", Dumper $stat;
 printf "All done!\nFinal stats:\n%s", Dumper $stat;
